@@ -341,4 +341,956 @@
           <input id="autoSyncToggle" type="checkbox" checked class="h-4 w-4 accent-emerald-500 rounded" />
         </label>
 
-     
+        <div class="grid grid-cols-3 gap-2">
+          <button id="btnSaveSheetConfig" type="button" class="rounded-xl bg-emerald-500 px-3 py-2 font-bold text-slate-950 hover:bg-emerald-400 transition">
+            Simpan URL
+          </button>
+          <button id="btnPullSheet" type="button" class="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 font-bold text-blue-700 hover:bg-blue-100 transition">
+            Tarik Data
+          </button>
+          <button id="btnPushSheet" type="button" class="rounded-xl border border-slate-200 bg-slate-100 px-3 py-2 font-bold text-slate-700 hover:bg-slate-200 transition">
+            Kirim Data
+          </button>
+        </div>
+
+        <div class="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="font-bold text-slate-800">Cara Pasang di Google Sheet Anda:</span>
+            <button id="btnCopyGasCode" type="button" class="flex items-center gap-1 rounded-lg bg-blue-600 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-blue-500 transition">
+              <i data-lucide="copy" class="h-3 w-3"></i>
+              <span>Salin Kode</span>
+            </button>
+          </div>
+          <ol class="list-decimal pl-4 space-y-1 text-[11px] text-slate-600">
+            <li>Buka Google Sheet Anda &rarr; klik <strong>Ekstensi &gt; Apps Script</strong> (pakai mode Incognito jika multi-akun).</li>
+            <li>Tempel kode di bawah, klik <strong>Simpan</strong>, lalu jalankan <code>doGet</code> sekali untuk memberi izin.</li>
+            <li>Klik <strong>Terapkan &gt; Deployment baru &gt; Aplikasi Web</strong> (Akses: <strong>Siapa saja</strong>).</li>
+            <li>Salin URL Web App yang muncul ke kolom di atas.</li>
+          </ol>
+          <pre id="gasCodePreview" class="max-h-36 overflow-auto custom-scroll rounded-lg bg-slate-900 p-2.5 text-[10px] text-emerald-300 font-mono leading-relaxed"></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Container -->
+  <div id="toastContainer" class="fixed bottom-4 left-1/2 z-50 flex w-full max-w-sm -translate-x-1/2 flex-col gap-2 px-4 pointer-events-none"></div>
+
+  <script>
+    (function () {
+      const STORAGE_KEY_STOCK = 'bot_stok_foam_items_v1';
+      const STORAGE_KEY_LOGS = 'bot_stok_foam_logs_v1';
+      const STORAGE_KEY_SHEET_URL = 'bot_stok_foam_sheet_url_v1';
+      const STORAGE_KEY_AUTO_SYNC = 'bot_stok_foam_auto_sync_v1';
+      const STORAGE_KEY_SHEET_PIN = 'bot_stok_foam_sheet_pin_v1';
+
+      const GAS_SCRIPT_CODE = `var SECRET_PIN = '123456'; // Ganti dengan PIN rahasia Anda
+
+function doGet(e) {
+  if (!e || !e.parameter || e.parameter.pin !== SECRET_PIN) {
+    return ContentService.createTextOutput(JSON.stringify({ status: 'unauthorized', error: 'PIN salah' }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var master = ss.getSheetByName('Master stok') || ss.insertSheet('Master stok');
+  if (master.getLastRow() === 0) master.appendRow(['Nama barang', 'Jumlah', 'Satuan']);
+  var mData = master.getDataRange().getValues();
+  var items = [];
+  for (var i = 1; i < mData.length; i++) {
+    if (mData[i][0]) {
+      items.push({
+        id: String(i),
+        name: String(mData[i][0]),
+        qty: Number(mData[i][1]) || 0,
+        unit: String(mData[i][2] || 'pcs')
+      });
+    }
+  }
+  var logSheet = ss.getSheetByName('data log') || ss.insertSheet('data log');
+  if (logSheet.getLastRow() === 0) logSheet.appendRow(['Tanggal', 'Nama barang', 'Jumlah', 'In/out', 'Satuan']);
+  var lData = logSheet.getDataRange().getValues();
+  var logs = [];
+  var cutoff = new Date();
+  cutoff.setMonth(cutoff.getMonth() - 3);
+  for (var j = lData.length - 1; j >= 1; j--) {
+    if (lData[j][1]) {
+      var rawDate = lData[j][0];
+      var dObj = rawDate instanceof Date ? rawDate : new Date(rawDate);
+      if (isNaN(dObj.getTime()) || dObj >= cutoff) {
+        logs.push({
+          id: String(j),
+          dateISO: isNaN(dObj.getTime()) ? new Date().toISOString() : dObj.toISOString(),
+          time: isNaN(dObj.getTime()) ? String(rawDate) : Utilities.formatDate(dObj, Session.getScriptTimeZone(), 'dd/MM/yyyy HH:mm'),
+          name: String(lData[j][1]),
+          qty: Number(lData[j][2]) || 0,
+          mode: String(lData[j][3] || 'IN').toUpperCase(),
+          unit: String(lData[j][4] || 'pcs')
+        });
+      }
+    }
+  }
+  return ContentService.createTextOutput(JSON.stringify({ status: 'ok', items: items, logs: logs }))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function doPost(e) {
+  var payload = JSON.parse(e.postData.contents);
+  if (!payload || payload.pin !== SECRET_PIN) {
+    return ContentService.createTextOutput(JSON.stringify({ status: 'unauthorized', error: 'PIN salah' }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  var master = ss.getSheetByName('Master stok') || ss.insertSheet('Master stok');
+  master.clearContents();
+  master.appendRow(['Nama barang', 'Jumlah', 'Satuan']);
+  var mRows = (payload.items || []).map(function(it) {
+    return [it.name, Number(it.qty) || 0, it.unit || 'pcs'];
+  });
+  if (mRows.length > 0) master.getRange(2, 1, mRows.length, 3).setValues(mRows);
+
+  if (payload.newLogs && payload.newLogs.length > 0) {
+    var masukSheet = ss.getSheetByName('Stok masuk') || ss.insertSheet('Stok masuk');
+    if (masukSheet.getLastRow() === 0) masukSheet.appendRow(['Tanggal', 'Nama barang', 'Jumlah', 'Satuan']);
+
+    var keluarSheet = ss.getSheetByName('keluar') || ss.insertSheet('keluar');
+    if (keluarSheet.getLastRow() === 0) keluarSheet.appendRow(['Tanggal', 'Nama barang', 'Jumlah', 'Satuan']);
+
+    var logSheet = ss.getSheetByName('data log') || ss.insertSheet('data log');
+    if (logSheet.getLastRow() === 0) logSheet.appendRow(['Tanggal', 'Nama barang', 'Jumlah', 'In/out', 'Satuan']);
+
+    var inRows = [], outRows = [], allRows = [];
+    payload.newLogs.forEach(function(l) {
+      var tgl = l.time || new Date().toLocaleString('id-ID');
+      allRows.push([tgl, l.name, Number(l.qty) || 0, l.mode, l.unit || 'pcs']);
+      if (l.mode === 'IN') {
+        inRows.push([tgl, l.name, Number(l.qty) || 0, l.unit || 'pcs']);
+      } else {
+        outRows.push([tgl, l.name, Number(l.qty) || 0, l.unit || 'pcs']);
+      }
+    });
+    if (inRows.length > 0) masukSheet.getRange(masukSheet.getLastRow() + 1, 1, inRows.length, 4).setValues(inRows);
+    if (outRows.length > 0) keluarSheet.getRange(keluarSheet.getLastRow() + 1, 1, outRows.length, 4).setValues(outRows);
+    if (allRows.length > 0) logSheet.getRange(logSheet.getLastRow() + 1, 1, allRows.length, 5).setValues(allRows);
+  }
+  return ContentService.createTextOutput(JSON.stringify({ status: 'ok' }))
+    .setMimeType(ContentService.MimeType.JSON);
+}`;
+
+      const DEFAULT_ITEMS = [
+        { id: '1', name: '120 m/ST', unit: 'pcs', qty: 40 },
+        { id: '2', name: '120 m/SA', unit: 'pcs', qty: 10 },
+        { id: '3', name: '200 m/ST', unit: 'pcs', qty: 30 },
+        { id: '4', name: '200 m/SA', unit: 'pcs', qty: 25 },
+        { id: '5', name: '100 m/ST', unit: 'pcs', qty: 15 }
+      ];
+
+      let mode = 'IN';
+      let items = [];
+      let logs = [];
+      let lastFilterMode = 'SEARCH';
+      let sheetUrl = '';
+      let sheetPin = '';
+      let autoSync = true;
+
+      const btnModeIn = document.getElementById('btnModeIn');
+      const btnModeOut = document.getElementById('btnModeOut');
+      const modeHint = document.getElementById('modeHint');
+      const koreksiToggle = document.getElementById('koreksiToggle');
+      const koreksiPreview = document.getElementById('koreksiPreview');
+      const botInput = document.getElementById('botInput');
+      const btnFillSample = document.getElementById('btnFillSample');
+      const btnFillKoreksi = document.getElementById('btnFillKoreksi');
+      const btnClearInput = document.getElementById('btnClearInput');
+      const btnDone = document.getElementById('btnDone');
+
+      const searchTypeInput = document.getElementById('searchTypeInput');
+      const btnCari = document.getElementById('btnCari');
+      const btnDataLog3M = document.getElementById('btnDataLog3M');
+      const hasilTitle = document.getElementById('hasilTitle');
+      const hasilBadge = document.getElementById('hasilBadge');
+      const hasilContainer = document.getElementById('hasilContainer');
+
+      const dataSheetBody = document.getElementById('dataSheetBody');
+      const totalSku = document.getElementById('totalSku');
+      const totalQty = document.getElementById('totalQty');
+      const btnStokTerakhir = document.getElementById('btnStokTerakhir');
+      const btnUnduh = document.getElementById('btnUnduh');
+      const btnCopySummary = document.getElementById('btnCopySummary');
+      const lastUpdatedLabel = document.getElementById('lastUpdatedLabel');
+
+      const btnAddManual = document.getElementById('btnAddManual');
+      const itemModal = document.getElementById('itemModal');
+      const modalTitle = document.getElementById('modalTitle');
+      const itemForm = document.getElementById('itemForm');
+      const editItemId = document.getElementById('editItemId');
+      const itemNameInput = document.getElementById('itemNameInput');
+      const itemUnitInput = document.getElementById('itemUnitInput');
+      const itemQtyInput = document.getElementById('itemQtyInput');
+      const btnCloseModal = document.getElementById('btnCloseModal');
+      const btnCancelModal = document.getElementById('btnCancelModal');
+
+      const btnHistoryToggle = document.getElementById('btnHistoryToggle');
+      const logCountBadge = document.getElementById('logCountBadge');
+      const logModal = document.getElementById('logModal');
+      const btnCloseLog = document.getElementById('btnCloseLog');
+      const btnClearLog = document.getElementById('btnClearLog');
+      const logListContainer = document.getElementById('logListContainer');
+
+      const toastContainer = document.getElementById('toastContainer');
+      const btnSheetConfig = document.getElementById('btnSheetConfig');
+      const sheetStatusDot = document.getElementById('sheetStatusDot');
+      const sheetModal = document.getElementById('sheetModal');
+      const btnCloseSheetModal = document.getElementById('btnCloseSheetModal');
+      const sheetUrlInput = document.getElementById('sheetUrlInput');
+      const sheetPinInput = document.getElementById('sheetPinInput');
+      const btnTogglePin = document.getElementById('btnTogglePin');
+      const autoSyncToggle = document.getElementById('autoSyncToggle');
+      const btnSaveSheetConfig = document.getElementById('btnSaveSheetConfig');
+      const btnPullSheet = document.getElementById('btnPullSheet');
+      const btnPushSheet = document.getElementById('btnPushSheet');
+      const btnCopyGasCode = document.getElementById('btnCopyGasCode');
+      const gasCodePreview = document.getElementById('gasCodePreview');
+
+      function loadState() {
+        try {
+          const savedItems = localStorage.getItem(STORAGE_KEY_STOCK);
+          items = savedItems ? JSON.parse(savedItems) : JSON.parse(JSON.stringify(DEFAULT_ITEMS));
+          if (!Array.isArray(items) || items.length === 0) items = JSON.parse(JSON.stringify(DEFAULT_ITEMS));
+        } catch (e) {
+          items = JSON.parse(JSON.stringify(DEFAULT_ITEMS));
+        }
+
+        try {
+          const savedLogs = localStorage.getItem(STORAGE_KEY_LOGS);
+          logs = savedLogs ? JSON.parse(savedLogs) : [];
+          if (!Array.isArray(logs)) logs = [];
+        } catch (e) {
+          logs = [];
+        }
+
+        try {
+          sheetUrl = localStorage.getItem(STORAGE_KEY_SHEET_URL) || '';
+          sheetPin = localStorage.getItem(STORAGE_KEY_SHEET_PIN) || '';
+          const savedAuto = localStorage.getItem(STORAGE_KEY_AUTO_SYNC);
+          autoSync = savedAuto === null ? true : savedAuto === 'true';
+        } catch (e) {
+          sheetUrl = '';
+          sheetPin = '';
+          autoSync = true;
+        }
+      }
+
+      function saveState() {
+        try {
+          localStorage.setItem(STORAGE_KEY_STOCK, JSON.stringify(items));
+          localStorage.setItem(STORAGE_KEY_LOGS, JSON.stringify(logs));
+        } catch (e) {}
+        const now = new Date();
+        lastUpdatedLabel.textContent = 'Terakhir diperbarui: ' + now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      }
+
+      function updateSheetStatusDot(state) {
+        if (!sheetUrl) {
+          sheetStatusDot.className = 'h-2 w-2 rounded-full bg-slate-400';
+          return;
+        }
+        if (state === 'syncing') {
+          sheetStatusDot.className = 'h-2 w-2 rounded-full bg-amber-400 animate-pulse';
+        } else if (state === 'error') {
+          sheetStatusDot.className = 'h-2 w-2 rounded-full bg-rose-500';
+        } else {
+          sheetStatusDot.className = 'h-2 w-2 rounded-full bg-emerald-500';
+        }
+      }
+
+      async function pushToSheet(newLogs = [], silent = false) {
+        if (!sheetUrl) return;
+        updateSheetStatusDot('syncing');
+        try {
+          const res = await fetch(sheetUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            body: JSON.stringify({ pin: sheetPin, items, newLogs })
+          });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          const data = await res.json();
+          if (data && data.status === 'unauthorized') {
+            updateSheetStatusDot('error');
+            showToast('PIN keamanan salah atau tidak cocok dengan Apps Script!', 'error');
+            return;
+          }
+          updateSheetStatusDot('ok');
+          if (!silent) showToast('Data Sheet berhasil dikirim ke Google Sheet!', 'success');
+        } catch (err) {
+          updateSheetStatusDot('error');
+          showToast('Gagal sinkron ke Google Sheet. Periksa URL / akses Web App.', 'error');
+        }
+      }
+
+      async function pullFromSheet() {
+        if (!sheetUrl) {
+          showToast('Masukkan URL Web App Google Apps Script dulu.', 'error');
+          return;
+        }
+        updateSheetStatusDot('syncing');
+        try {
+          const sep = sheetUrl.includes('?') ? '&' : '?';
+          const res = await fetch(sheetUrl + sep + 'action=get&pin=' + encodeURIComponent(sheetPin));
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          const data = await res.json();
+          if (data && data.status === 'unauthorized') {
+            updateSheetStatusDot('error');
+            showToast('PIN keamanan salah atau tidak cocok dengan Apps Script!', 'error');
+            return;
+          }
+          if (data && Array.isArray(data.items)) {
+            if (data.items.length > 0) items = data.items;
+            if (Array.isArray(data.logs) && data.logs.length > 0) logs = data.logs;
+            saveState();
+            renderAll();
+            if (data.items.length > 0 || (data.logs && data.logs.length > 0)) {
+              showToast(`Sinkron berhasil: ${items.length} item & ${logs.length} log 3 bulan terakhir!`, 'success');
+            } else {
+              showToast('Google Sheet masih kosong. Gunakan "Kirim Data" untuk mengisi awal.', 'info');
+            }
+            updateSheetStatusDot('ok');
+          } else {
+            throw new Error('Format respon tidak valid');
+          }
+        } catch (err) {
+          updateSheetStatusDot('error');
+          showToast('Gagal mengambil data dari Google Sheet.', 'error');
+        }
+      }
+
+      function showToast(message, type = 'info') {
+        const colors = {
+          success: 'border-emerald-200 bg-emerald-50 text-emerald-900',
+          error: 'border-rose-200 bg-rose-50 text-rose-900',
+          info: 'border-blue-200 bg-blue-50 text-blue-900'
+        };
+        const el = document.createElement('div');
+        el.className = `toast-anim pointer-events-auto rounded-xl border px-3.5 py-2.5 text-xs font-semibold shadow-lg ${colors[type] || colors.info}`;
+        el.textContent = message;
+        toastContainer.appendChild(el);
+        setTimeout(() => el.remove(), 3200);
+      }
+
+      function setMode(nextMode) {
+        mode = nextMode;
+        if (mode === 'IN') {
+          btnModeIn.className = 'rounded-lg bg-emerald-500 px-3 py-1 text-xs font-bold text-slate-950 shadow-sm transition';
+          btnModeOut.className = 'rounded-lg bg-slate-100 border border-slate-200 px-3 py-1 text-xs font-bold text-slate-600 hover:bg-slate-200 transition';
+          btnDone.className = 'ml-auto flex items-center gap-1.5 rounded-xl bg-emerald-500 px-5 py-2 text-xs font-bold text-slate-950 shadow-sm hover:bg-emerald-400 active:scale-[0.98] transition';
+          modeHint.className = 'mt-2 text-[11px] text-emerald-700';
+          modeHint.innerHTML = 'Mode aktif: <strong>In (+)</strong> — stok akan ditambahkan ke Master stok.';
+        } else {
+          btnModeOut.className = 'rounded-lg bg-rose-500 px-3 py-1 text-xs font-bold text-white shadow-sm transition';
+          btnModeIn.className = 'rounded-lg bg-slate-100 border border-slate-200 px-3 py-1 text-xs font-bold text-slate-600 hover:bg-slate-200 transition';
+          btnDone.className = 'ml-auto flex items-center gap-1.5 rounded-xl bg-rose-500 px-5 py-2 text-xs font-bold text-white shadow-sm hover:bg-rose-400 active:scale-[0.98] transition';
+          modeHint.className = 'mt-2 text-[11px] text-rose-700';
+          modeHint.innerHTML = 'Mode aktif: <strong>Out (-)</strong> — stok akan dikurangi dari Master stok.';
+        }
+      }
+
+      function normalizeName(str) {
+        return str.trim().replace(/\s+/g, ' ').toLowerCase();
+      }
+
+      const NON_FOAM_KEYWORDS = [
+        'packing kayu', 'kayu', 'koli', 'bubble', 'gojek', 'grab', 'shopee', 'shoppe',
+        'tokopedia', 'lazada', 'ekspedisi', 'kurir', 'diambil', 'kirim', 'ongkir', 'dus', 'kardus'
+      ];
+
+      function isFoamItemLine(name, unit) {
+        const lowName = name.toLowerCase();
+        const lowUnit = (unit || '').toLowerCase();
+        if (lowName.startsWith('(') && lowName.endsWith(')')) return false;
+        if (lowUnit === 'koli') return false;
+        if (NON_FOAM_KEYWORDS.some((kw) => lowName.includes(kw))) return false;
+        if (items.some((it) => normalizeName(it.name) === normalizeName(name))) return true;
+        return /(\bm\/(st|sa)\b|\d+\s*wp\b|\bmono\b|\bpoly\b|\bfoam\b|\b(st|sa)\b)/i.test(name);
+      }
+
+      function parseBotLine(rawLine) {
+        const line = rawLine.trim();
+        if (!line) return null;
+        const match = line.match(/^(.+?)[\s:=-]+(\d+)\s*([a-zA-Z]*)$/);
+        if (!match) return { error: `Format tidak dikenali: "${line}"` };
+        const name = match[1].trim().replace(/\s+/g, ' ');
+        const qty = parseInt(match[2], 10);
+        const unit = (match[3] || 'pcs').trim();
+        if (!name || isNaN(qty) || qty <= 0) return { error: `Jumlah harus > 0 pada: "${line}"` };
+        return { name, qty, unit };
+      }
+
+      function analyzeInputLines(rawText) {
+        const lines = rawText.split(/\r?\n/).filter((l) => l.trim() !== '');
+        const useKoreksi = koreksiToggle.checked;
+        const parsed = [];
+        const ignored = [];
+        const errors = [];
+
+        for (const line of lines) {
+          const res = parseBotLine(line);
+          if (useKoreksi) {
+            if (!res || res.error || !isFoamItemLine(res.name, res.unit)) {
+              ignored.push(line.trim());
+            } else {
+              parsed.push(res);
+            }
+          } else {
+            if (res && res.error) {
+              errors.push(res.error);
+            } else if (res) {
+              parsed.push(res);
+            }
+          }
+        }
+        return { parsed, ignored, errors };
+      }
+
+      function updateKoreksiPreview() {
+        const raw = botInput.value.trim();
+        if (!raw || !koreksiToggle.checked) {
+          koreksiPreview.classList.add('hidden');
+          koreksiPreview.innerHTML = '';
+          return;
+        }
+        const { parsed, ignored } = analyzeInputLines(raw);
+        koreksiPreview.classList.remove('hidden');
+        if (parsed.length === 0) {
+          koreksiPreview.className = 'mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] font-medium text-amber-800';
+          koreksiPreview.textContent = `Mode Koreksi: 0 item Foam terdeteksi (${ignored.length} baris non-foam diabaikan).`;
+        } else {
+          koreksiPreview.className = 'mt-2 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-[11px] font-medium text-blue-800';
+          const listText = parsed.map((p) => `${p.name} (${p.qty} ${p.unit})`).join(', ');
+          koreksiPreview.textContent = `Akan diproses (${parsed.length}): ${listText}${ignored.length ? ` • ${ignored.length} baris diabaikan` : ''}`;
+        }
+      }
+
+      function handleDone() {
+        const raw = botInput.value.trim();
+        if (!raw) {
+          showToast('Masukkan minimal satu baris barang terlebih dahulu.', 'error');
+          return;
+        }
+        const { parsed, ignored, errors } = analyzeInputLines(raw);
+        if (errors.length > 0) {
+          showToast(errors[0], 'error');
+          return;
+        }
+        if (parsed.length === 0) {
+          showToast('Tidak ada item Foam yang terdeteksi untuk diproses.', 'error');
+          return;
+        }
+
+        if (mode === 'OUT') {
+          for (const entry of parsed) {
+            const found = items.find((it) => normalizeName(it.name) === normalizeName(entry.name));
+            if (!found) {
+              showToast(`Barang "${entry.name}" tidak ditemukan di Master stok.`, 'error');
+              return;
+            }
+            if (found.qty < entry.qty) {
+              showToast(`Stok "${found.name}" tidak cukup (sisa ${found.qty} ${found.unit}).`, 'error');
+              return;
+            }
+          }
+        }
+
+        const now = new Date();
+        const dateISO = now.toISOString();
+        const timestamp = now.toLocaleDateString('id-ID', { day: '2-digit', month: '2-digit', year: 'numeric' }) + ' ' + now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
+
+        for (const entry of parsed) {
+          const found = items.find((it) => normalizeName(it.name) === normalizeName(entry.name));
+          if (mode === 'IN') {
+            if (found) {
+              found.qty += entry.qty;
+              if (entry.unit) found.unit = entry.unit;
+            } else {
+              items.push({
+                id: String(Date.now() + Math.random()),
+                name: entry.name,
+                unit: entry.unit || 'pcs',
+                qty: entry.qty
+              });
+            }
+          } else {
+            found.qty -= entry.qty;
+          }
+
+          logs.unshift({
+            id: String(Date.now() + Math.random()),
+            dateISO,
+            time: timestamp,
+            mode,
+            name: found ? found.name : entry.name,
+            qty: entry.qty,
+            unit: found ? found.unit : entry.unit
+          });
+        }
+
+        const batchLogs = logs.slice(0, parsed.length);
+        if (logs.length > 300) logs = logs.slice(0, 300);
+        botInput.value = '';
+        updateKoreksiPreview();
+        saveState();
+        renderAll();
+        const ignNote = ignored.length > 0 ? ` (${ignored.length} baris non-foam dilewati)` : '';
+        showToast(`${parsed.length} item Foam ${mode === 'IN' ? 'masuk (+)' : 'keluar (-)'} diproses${ignNote}!`, 'success');
+        if (sheetUrl && autoSync) pushToSheet(batchLogs, true);
+      }
+
+      function escapeHtml(str) {
+        return String(str)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      }
+
+      function renderDataSheet() {
+        dataSheetBody.innerHTML = '';
+        let sumQty = 0;
+
+        if (items.length === 0) {
+          dataSheetBody.innerHTML = `<tr><td colspan="4" class="px-4 py-6 text-center text-slate-400">Data Sheet masih kosong. Tambahkan barang lewat Form atau tombol +.</td></tr>`;
+        } else {
+          items.forEach((item) => {
+            sumQty += Number(item.qty) || 0;
+            const tr = document.createElement('tr');
+            tr.className = 'hover:bg-slate-50 transition';
+
+            const stockBadge =
+              item.qty <= 10
+                ? 'bg-amber-50 text-amber-800 border border-amber-200'
+                : 'bg-emerald-50 text-emerald-800 border border-emerald-200';
+
+            tr.innerHTML = `
+              <td class="px-3 py-2.5 font-semibold text-slate-800">${escapeHtml(item.name)}</td>
+              <td class="px-2.5 py-2.5 text-slate-500">${escapeHtml(item.unit)}</td>
+              <td class="px-2.5 py-2.5 text-right">
+                <span class="inline-block rounded-lg px-2 py-0.5 font-bold ${stockBadge}">${item.qty}</span>
+              </td>
+              <td class="px-2.5 py-2.5 text-right">
+                <div class="inline-flex items-center gap-0.5">
+                  <button type="button" data-action="edit" data-id="${item.id}" class="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 transition" title="Edit">
+                    <i data-lucide="pencil" class="h-3.5 w-3.5"></i>
+                  </button>
+                  <button type="button" data-action="delete" data-id="${item.id}" class="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600 transition" title="Hapus">
+                    <i data-lucide="trash-2" class="h-3.5 w-3.5"></i>
+                  </button>
+                </div>
+              </td>
+            `;
+            dataSheetBody.appendChild(tr);
+          });
+        }
+
+        totalSku.textContent = String(items.length);
+        totalQty.textContent = String(sumQty);
+        if (window.lucide) lucide.createIcons();
+      }
+
+      function renderHasil() {
+        const query = searchTypeInput.value.trim().toLowerCase();
+        hasilContainer.innerHTML = '';
+
+        if (lastFilterMode === 'DATA_LOG_3M') {
+          const cutoff = new Date();
+          cutoff.setMonth(cutoff.getMonth() - 3);
+          const filteredLogs = logs.filter((l) => {
+            const d = l.dateISO ? new Date(l.dateISO) : new Date();
+            const inRange = isNaN(d.getTime()) ? true : d >= cutoff;
+            const matchType = !query || l.name.toLowerCase().includes(query);
+            return inRange && matchType;
+          });
+
+          hasilTitle.textContent = query
+            ? `Data Log 3 Bulan: "${searchTypeInput.value.trim()}"`
+            : 'Data Log 3 Bulan Terakhir (Keluar/Masuk)';
+          hasilBadge.textContent = `${filteredLogs.length} transaksi`;
+
+          if (filteredLogs.length === 0) {
+            hasilContainer.innerHTML = `<div class="py-4 text-center text-xs text-slate-400">Belum ada transaksi keluar/masuk dalam 3 bulan terakhir${query ? ` untuk "${escapeHtml(searchTypeInput.value.trim())}"` : ''}.</div>`;
+            return;
+          }
+
+          filteredLogs.forEach((l) => {
+            const isIn = l.mode === 'IN';
+            const row = document.createElement('div');
+            row.className = 'flex items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2';
+            row.innerHTML = `
+              <div class="min-w-0">
+                <div class="truncate text-xs font-bold text-slate-800">${escapeHtml(l.name)}</div>
+                <div class="text-[10px] text-slate-400">${escapeHtml(l.time)}</div>
+              </div>
+              <span class="shrink-0 rounded-lg px-2 py-0.5 text-xs font-bold border ${isIn ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-rose-50 text-rose-700 border-rose-200'}">
+                ${isIn ? 'IN +' : 'OUT -'}${l.qty} ${escapeHtml(l.unit)}
+              </span>
+            `;
+            hasilContainer.appendChild(row);
+          });
+          return;
+        }
+
+        let matched = [];
+        if (lastFilterMode === 'ALL_LATEST' && !query) {
+          hasilTitle.textContent = 'Stok Terakhir (Semua)';
+          matched = items;
+        } else if (query) {
+          hasilTitle.textContent = `Hasil Pencarian: "${searchTypeInput.value.trim()}"`;
+          matched = items.filter((it) => it.name.toLowerCase().includes(query));
+        } else {
+          hasilTitle.textContent = 'Hasil Pencarian';
+          matched = items.slice(0, 3);
+        }
+
+        hasilBadge.textContent = `${matched.length} item`;
+
+        if (matched.length === 0) {
+          hasilContainer.innerHTML = `<div class="py-4 text-center text-xs text-slate-400">Type "${escapeHtml(searchTypeInput.value.trim())}" tidak ditemukan di Master stok.</div>`;
+          return;
+        }
+
+        matched.forEach((it) => {
+          const row = document.createElement('div');
+          row.className = 'flex items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2';
+          row.innerHTML = `
+            <span class="truncate text-xs font-bold text-slate-800">${escapeHtml(it.name)}</span>
+            <span class="shrink-0 rounded-lg bg-blue-50 px-2 py-0.5 text-xs font-bold text-blue-700 border border-blue-200">${it.qty} ${escapeHtml(it.unit)}</span>
+          `;
+          hasilContainer.appendChild(row);
+        });
+      }
+
+      function renderLogs() {
+        logCountBadge.textContent = String(logs.length);
+        logListContainer.innerHTML = '';
+        if (logs.length === 0) {
+          logListContainer.innerHTML = `<div class="py-8 text-center text-slate-400">Belum ada transaksi tercatat.</div>`;
+          return;
+        }
+
+        logs.forEach((log) => {
+          const isIn = log.mode === 'IN';
+          const el = document.createElement('div');
+          el.className = 'flex items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2';
+          el.innerHTML = `
+            <div class="min-w-0">
+              <div class="truncate font-bold text-slate-800">${escapeHtml(log.name)}</div>
+              <div class="text-[10px] text-slate-400">${escapeHtml(log.time)}</div>
+            </div>
+            <span class="shrink-0 rounded-lg px-2 py-0.5 text-xs font-bold ${isIn ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}">
+              ${isIn ? '+' : '-'}${log.qty} ${escapeHtml(log.unit)}
+            </span>
+          `;
+          logListContainer.appendChild(el);
+        });
+      }
+
+      function renderAll() {
+        renderDataSheet();
+        renderHasil();
+        renderLogs();
+      }
+
+      function downloadCsv() {
+        if (items.length === 0) {
+          showToast('Data Sheet kosong, tidak ada data untuk diunduh.', 'error');
+          return;
+        }
+        const header = ['Nama Barang', 'Satuan', 'Stok Terakhir'];
+        const rows = items.map((it) => [
+          `"${String(it.name).replace(/"/g, '""')}"`,
+          `"${String(it.unit).replace(/"/g, '""')}"`,
+          it.qty
+        ]);
+        const csvContent = '\uFEFF' + [header.join(','), ...rows.map((r) => r.join(','))].join('\n');
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        const dateStr = new Date().toISOString().slice(0, 10);
+        a.href = url;
+        a.download = `stok_foam_${dateStr}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        showToast('File CSV Stok Terakhir berhasil diunduh.', 'success');
+      }
+
+      function copyBotSummary() {
+        if (items.length === 0) {
+          showToast('Data Sheet masih kosong.', 'error');
+          return;
+        }
+        const lines = items.map((it) => `${it.name} ${it.qty}${it.unit}`);
+        const text = `*STOK TERAKHIR FOAM*\n` + lines.join('\n');
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(
+            () => showToast('Ringkasan stok disalin ke clipboard.', 'success'),
+            () => fallbackCopy(text)
+          );
+        } else {
+          fallbackCopy(text);
+        }
+      }
+
+      function fallbackCopy(text) {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        try {
+          document.execCommand('copy');
+          showToast('Ringkasan stok disalin ke clipboard.', 'success');
+        } catch (e) {
+          showToast('Gagal menyalin teks.', 'error');
+        }
+        ta.remove();
+      }
+
+      function openItemModal(item = null) {
+        if (item) {
+          modalTitle.textContent = 'Edit Barang';
+          editItemId.value = item.id;
+          itemNameInput.value = item.name;
+          itemUnitInput.value = item.unit;
+          itemQtyInput.value = item.qty;
+        } else {
+          modalTitle.textContent = 'Tambah Barang Baru';
+          editItemId.value = '';
+          itemNameInput.value = '';
+          itemUnitInput.value = 'pcs';
+          itemQtyInput.value = '0';
+        }
+        itemModal.classList.remove('hidden');
+        itemModal.classList.add('flex');
+        itemNameInput.focus();
+      }
+
+      function closeItemModal() {
+        itemModal.classList.add('hidden');
+        itemModal.classList.remove('flex');
+      }
+
+      btnModeIn.addEventListener('click', () => setMode('IN'));
+      btnModeOut.addEventListener('click', () => setMode('OUT'));
+      koreksiToggle.addEventListener('change', updateKoreksiPreview);
+      botInput.addEventListener('input', updateKoreksiPreview);
+
+      btnFillSample.addEventListener('click', () => {
+        botInput.value = '120 m/ST 10pcs\n120 m/SA 60pcs\n200 m/ST 30pcs';
+        updateKoreksiPreview();
+        botInput.focus();
+      });
+
+      btnFillKoreksi.addEventListener('click', () => {
+        botInput.value = '120wp Mono SA 1pcs\n(Bubble)\n\nDiambil Gojek Shoppe\n\n50wp Mono ST 4pcs\nPacking kayu 1koli\n(Bubble)';
+        updateKoreksiPreview();
+        botInput.focus();
+      });
+
+      btnClearInput.addEventListener('click', () => {
+        botInput.value = '';
+        updateKoreksiPreview();
+        botInput.focus();
+      });
+
+      btnDone.addEventListener('click', handleDone);
+
+      btnCari.addEventListener('click', () => {
+        lastFilterMode = 'SEARCH';
+        renderHasil();
+      });
+
+      btnDataLog3M.addEventListener('click', () => {
+        lastFilterMode = 'DATA_LOG_3M';
+        renderHasil();
+      });
+
+      searchTypeInput.addEventListener('input', () => {
+        lastFilterMode = 'SEARCH';
+        renderHasil();
+      });
+
+      searchTypeInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          lastFilterMode = 'SEARCH';
+          renderHasil();
+        }
+      });
+
+      btnStokTerakhir.addEventListener('click', () => {
+        searchTypeInput.value = '';
+        lastFilterMode = 'ALL_LATEST';
+        renderHasil();
+        showToast('Menampilkan seluruh Stok Terakhir di panel Hasil.', 'info');
+      });
+
+      btnUnduh.addEventListener('click', downloadCsv);
+      btnCopySummary.addEventListener('click', copyBotSummary);
+
+      dataSheetBody.addEventListener('click', (e) => {
+        const btn = e.target.closest('button[data-action]');
+        if (!btn) return;
+        const action = btn.getAttribute('data-action');
+        const id = btn.getAttribute('data-id');
+        const found = items.find((it) => it.id === id);
+        if (!found) return;
+
+        if (action === 'edit') {
+          openItemModal(found);
+        } else if (action === 'delete') {
+          items = items.filter((it) => it.id !== id);
+          saveState();
+          renderAll();
+          showToast(`"${found.name}" dihapus dari Data Sheet.`, 'info');
+          if (sheetUrl && autoSync) pushToSheet([], true);
+        }
+      });
+
+      btnAddManual.addEventListener('click', () => openItemModal(null));
+      btnCloseModal.addEventListener('click', closeItemModal);
+      btnCancelModal.addEventListener('click', closeItemModal);
+
+      itemForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const id = editItemId.value;
+        const name = itemNameInput.value.trim().replace(/\s+/g, ' ');
+        const unit = itemUnitInput.value.trim() || 'pcs';
+        const qty = Math.max(0, parseInt(itemQtyInput.value, 10) || 0);
+        if (!name) return;
+
+        if (id) {
+          const found = items.find((it) => it.id === id);
+          if (found) {
+            found.name = name;
+            found.unit = unit;
+            found.qty = qty;
+          }
+          showToast(`"${name}" diperbarui.`, 'success');
+        } else {
+          items.push({ id: String(Date.now()), name, unit, qty });
+          showToast(`"${name}" ditambahkan ke Data Sheet.`, 'success');
+        }
+
+        saveState();
+        renderAll();
+        closeItemModal();
+        if (sheetUrl && autoSync) pushToSheet([], true);
+      });
+
+      btnHistoryToggle.addEventListener('click', () => {
+        logModal.classList.remove('hidden');
+        logModal.classList.add('flex');
+      });
+
+      btnCloseLog.addEventListener('click', () => {
+        logModal.classList.add('hidden');
+        logModal.classList.remove('flex');
+      });
+
+      btnClearLog.addEventListener('click', () => {
+        logs = [];
+        saveState();
+        renderLogs();
+        showToast('Riwayat log dibersihkan.', 'info');
+      });
+
+      btnTogglePin.addEventListener('click', () => {
+        const isPwd = sheetPinInput.type === 'password';
+        sheetPinInput.type = isPwd ? 'text' : 'password';
+        btnTogglePin.textContent = isPwd ? 'Sembunyi' : 'Lihat';
+      });
+
+      btnSheetConfig.addEventListener('click', () => {
+        sheetUrlInput.value = sheetUrl;
+        sheetPinInput.value = sheetPin;
+        autoSyncToggle.checked = autoSync;
+        gasCodePreview.textContent = GAS_SCRIPT_CODE;
+        sheetModal.classList.remove('hidden');
+        sheetModal.classList.add('flex');
+      });
+
+      btnCloseSheetModal.addEventListener('click', () => {
+        sheetModal.classList.add('hidden');
+        sheetModal.classList.remove('flex');
+      });
+
+      btnSaveSheetConfig.addEventListener('click', () => {
+        const val = sheetUrlInput.value.trim();
+        const pinVal = sheetPinInput.value.trim();
+        if (val && !val.startsWith('https://script.google.com/')) {
+          showToast('Gunakan URL Web App Google Apps Script (https://script.google.com/...).', 'error');
+          return;
+        }
+        if (val && !pinVal) {
+          showToast('Masukkan PIN keamanan untuk melindungi koneksi Google Sheet.', 'error');
+          return;
+        }
+        sheetUrl = val;
+        sheetPin = pinVal;
+        autoSync = autoSyncToggle.checked;
+        try {
+          localStorage.setItem(STORAGE_KEY_SHEET_URL, sheetUrl);
+          localStorage.setItem(STORAGE_KEY_SHEET_PIN, sheetPin);
+          localStorage.setItem(STORAGE_KEY_AUTO_SYNC, String(autoSync));
+        } catch (e) {}
+        updateSheetStatusDot(sheetUrl ? 'ok' : '');
+        showToast(sheetUrl ? 'URL & PIN Google Sheet disimpan!' : 'Koneksi Google Sheet dinonaktifkan (mode lokal).', 'success');
+      });
+
+      btnPullSheet.addEventListener('click', () => {
+        const val = sheetUrlInput.value.trim();
+        const pinVal = sheetPinInput.value.trim();
+        if (val) sheetUrl = val;
+        if (pinVal) sheetPin = pinVal;
+        pullFromSheet();
+      });
+
+      btnPushSheet.addEventListener('click', () => {
+        const val = sheetUrlInput.value.trim();
+        const pinVal = sheetPinInput.value.trim();
+        if (val) sheetUrl = val;
+        if (pinVal) sheetPin = pinVal;
+        if (!sheetUrl) {
+          showToast('Masukkan URL Web App Google Apps Script dulu.', 'error');
+          return;
+        }
+        pushToSheet([], false);
+      });
+
+      btnCopyGasCode.addEventListener('click', () => {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(GAS_SCRIPT_CODE).then(
+            () => showToast('Kode Apps Script disalin ke clipboard.', 'success'),
+            () => fallbackCopy(GAS_SCRIPT_CODE)
+          );
+        } else {
+          fallbackCopy(GAS_SCRIPT_CODE);
+        }
+      });
+
+      loadState();
+      updateSheetStatusDot(sheetUrl ? 'ok' : '');
+      setMode('IN');
+      renderAll();
+      if (window.lucide) lucide.createIcons();
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('./sw.js').catch(() => {});
+        });
+      }
+    })();
+  </script>
+</body>
+</html>
